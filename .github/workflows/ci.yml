@@ -1,0 +1,58 @@
+# 在官方 Zephyr v4.4.0 容器里编译 README 验证板 nucleo_l4r5zi。
+#
+# framework 子模块的 west.yml 不 import Zephyr 模块（当前钉住的版本还指向本机
+# Windows 路径），因此这里单独用官方 manifest 初始化 west，并导出 ZEPHYR_BASE。
+# CMake 看到 ZEPHYR_BASE 后会跳过 framework/zephyr_config.env 里的 Windows 路径。
+# 不编 esp32c6_devkitm：west blobs fetch hal_espressif 经常返回 HTTP 429。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ZEPHYR_VERSION: v4.4.0
+
+jobs:
+  build:
+    name: nucleo_l4r5zi
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/zephyrproject-rtos/zephyr-build:v0.29.4
+      options: --user root
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Initialize west (Zephyr v4.4.0)
+        run: |
+          set -euo pipefail
+          west --version
+          ws="${RUNNER_TEMP}/zephyr-ws"
+          west init -m https://github.com/zephyrproject-rtos/zephyr --mr "${ZEPHYR_VERSION}" "${ws}"
+          cd "${ws}"
+          west update --narrow --fetch-opt=--depth=1
+          west zephyr-export
+          echo "ZEPHYR_BASE=${ws}/zephyr" >> "${GITHUB_ENV}"
+
+      - name: Build nucleo_l4r5zi
+        run: |
+          set -euo pipefail
+          test -n "${ZEPHYR_BASE}"
+          test -f "${ZEPHYR_BASE}/VERSION"
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          west build -b nucleo_l4r5zi -d build . -p always
+          test -f build/zephyr/zephyr.bin
