@@ -50,6 +50,19 @@ jobs:
           west update --narrow --fetch-opt=--depth=1
           west zephyr-export
           echo "ZEPHYR_BASE=${ws}/zephyr" >> "${GITHUB_ENV}"
+          # 镜像把 SDK 的 CMake 包登记在默认用户 home 下；--user root 时找不到。
+          # Zephyr 4.4 要求 SDK >= 1.0，这里显式指向 /opt 里的安装目录。
+          if [[ -z "${ZEPHYR_SDK_INSTALL_DIR:-}" ]]; then
+            mapfile -t sdks < <(find /opt/toolchains /opt -maxdepth 3 -type d -name 'zephyr-sdk-*' | sort -V)
+            if [[ ${#sdks[@]} -eq 0 ]]; then
+              echo "Zephyr SDK not found under /opt" >&2
+              exit 1
+            fi
+            sdk="${sdks[-1]}"
+            "${sdk}/setup.sh" -c
+            echo "ZEPHYR_SDK_INSTALL_DIR=${sdk}" >> "${GITHUB_ENV}"
+            echo "Using Zephyr SDK at ${sdk}"
+          fi
 
       - name: Build nucleo_l4r5zi
         run: |
