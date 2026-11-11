@@ -1,13 +1,28 @@
 /**
  * Nucleo L4R5ZI 补充 overlay（不覆盖 framework 中的文件）
- * 添加 CAN 节点和 UART alias 用于验证
+ * 添加 UART alias，并把 SRAM1+SRAM2+SRAM3 合成一段 640KB。
+ *
+ * Zephyr 4.4 的默认 zephyr,sram 只有 SRAM1（192KB）。framework/boards 里的同名
+ * overlay 不会被应用根目录的 west build 自动合并；不扩展时链接报
+ * region `RAM' overflowed。物理地址连续：0x20000000 起 640KB（RM0432）。
  */
 
-/* 为 Nucleo L4R5ZI 补充 CAN 和 UART alias */
+/* 为 Nucleo L4R5ZI 补充 UART alias */
 / {
 	aliases {
 		/* 使用板载 LPUART1 作为 RS-485 UART（验证用） */
 		rs485-uart = &lpuart1;
+	};
+};
+
+/delete-node/ &sram0;
+/delete-node/ &sram1;
+/delete-node/ &sram2;
+
+/ {
+	sram0: memory@20000000 {
+		/* 640 KiB 连续 SRAM，供 chosen zephyr,sram 使用 */
+		reg = <0x20000000 0xA0000>;
 	};
 };
 
