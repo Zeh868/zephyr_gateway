@@ -318,7 +318,8 @@ static int cmd_anomaly_config(const struct shell* sh, size_t argc, char** argv)
         return -1;
     }
 
-    int err;
+    /* shell_strtoul 成功时不改 err，调用前必须置 0，否则栈上残留值会把合法 sensor_type 判失败。 */
+    int err = 0;
     unsigned long sensor_type_ul = shell_strtoul(argv[1], 0, &err);
     if (err != 0 || sensor_type_ul >= 5) {
         shell_print(sh, "sensor_type 范围: 0-4");

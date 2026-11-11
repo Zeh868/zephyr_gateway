@@ -1,0 +1,117 @@
+# 在官方 Zephyr v4.4.0 容器里编译 README 验证板 nucleo_l4r5zi。
+#
+# framework 子模块的 west.yml 不 import Zephyr 模块（当前钉住的版本还指向本机
+# Windows 路径），因此这里单独用官方 manifest 初始化 west，并导出 ZEPHYR_BASE。
+# CMake 看到 ZEPHYR_BASE 后会跳过 framework/zephyr_config.env 里的 Windows 路径。
+# 不编 esp32c6_devkitm：west blobs fetch hal_espressif 经常返回 HTTP 429。
+# qemu_riscv32 在同一份 Zephyr 树上额外跑仿真：检查异常检测阈值与模块注册，
+# 不把启动横幅当成通过。QEMU 不能验证物理 PHY、总线时序或实板外设。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  ZEPHYR_VERSION: v4.4.0
+
+jobs:
+  build:
+    name: nucleo_l4r5zi
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        # 容器作业默认 shell 是 dash，不支持 pipefail / source。
+        shell: bash
+    container:
+      image: ghcr.io/zephyrproject-rtos/zephyr-build:v0.29.4
+      options: --user root
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Test QEMU serial checker
+        run: python3 -m unittest scripts.test_qemu_serial_check
+
+      - name: Initialize west (Zephyr v4.4.0)
+        run: |
+          set -euo pipefail
+          west --version
+          ws="${RUNNER_TEMP}/zephyr-ws"
+          west init -m https://github.com/zephyrproject-rtos/zephyr --mr "${ZEPHYR_VERSION}" "${ws}"
+          cd "${ws}"
+          west update --narrow --fetch-opt=--depth=1
+          west zephyr-export
+          echo "ZEPHYR_BASE=${ws}/zephyr" >> "${GITHUB_ENV}"
+          # 镜像把 SDK 的 CMake 包登记在默认用户 home 下；--user root 时找不到。
+          # Zephyr 4.4 要求 SDK >= 1.0，这里显式指向 /opt 里的安装目录。
+          if [[ -z "${ZEPHYR_SDK_INSTALL_DIR:-}" ]]; then
+            mapfile -t sdks < <(find /opt/toolchains /opt -maxdepth 3 -type d -name 'zephyr-sdk-*' | sort -V)
+            if [[ ${#sdks[@]} -eq 0 ]]; then
+              echo "Zephyr SDK not found under /opt" >&2
+              exit 1
+            fi
+            sdk="${sdks[-1]}"
+            "${sdk}/setup.sh" -c
+            echo "ZEPHYR_SDK_INSTALL_DIR=${sdk}" >> "${GITHUB_ENV}"
+            echo "Using Zephyr SDK at ${sdk}"
+          fi
+
+      - name: Build nucleo_l4r5zi
+        run: |
+          set -euo pipefail
+          test -n "${ZEPHYR_BASE}"
+          test -f "${ZEPHYR_BASE}/VERSION"
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          west build -b nucleo_l4r5zi -d build . -p always
+          test -f build/zephyr/zephyr.bin
+
+      # 虚拟板 qemu_riscv32。gateway_prj_qemu.conf 关掉以太网/CAN/Flash/NVS，
+      # 不能代替 nucleo 实板，也不覆盖 PHY 与时序。
+      - name: Build qemu_riscv32
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          west build -b qemu_riscv32 -d build_qemu . -p always -- \
+            '-DCONF_FILE=framework/prj.conf;gateway_prj.conf;gateway_prj_qemu.conf;framework/conf/targets/qemu.conf'
+          test -f build_qemu/zephyr/zephyr.elf
+
+      - name: Run qemu_riscv32 business checks
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          mkdir -p ci-artifacts
+          python3 scripts/qemu_serial_check.py \
+            --timeout 90 \
+            --log ci-artifacts/qemu-riscv32-serial.txt \
+            --ready 'uart:~$' \
+            --send 'anomaly config 1 2.5 3.5 5.0' \
+            --send 'gateway status' \
+            --require '传感器 1 阈值已更新: W=2.5 C=3.5 E=5.0' \
+            --require-regex 'Anomaly:\s+(INITIALIZED|RUNNING)' \
+            -- west build -t run --build-dir build_qemu
+
+      - name: Upload QEMU serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-riscv32-serial
+          path: ci-artifacts/qemu-riscv32-serial.txt
+          if-no-files-found: warn
+          retention-days: 7
