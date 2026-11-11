@@ -4,6 +4,8 @@
 # Windows 路径），因此这里单独用官方 manifest 初始化 west，并导出 ZEPHYR_BASE。
 # CMake 看到 ZEPHYR_BASE 后会跳过 framework/zephyr_config.env 里的 Windows 路径。
 # 不编 esp32c6_devkitm：west blobs fetch hal_espressif 经常返回 HTTP 429。
+# qemu_riscv32 在同一份 Zephyr 树上额外跑仿真：检查异常检测阈值与模块注册，
+# 不把启动横幅当成通过。QEMU 不能验证物理 PHY、总线时序或实板外设。
 
 name: CI
 
@@ -18,6 +20,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   ZEPHYR_VERSION: v4.4.0
@@ -39,6 +42,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Test QEMU serial checker
+        run: python3 -m unittest scripts.test_qemu_serial_check
 
       - name: Initialize west (Zephyr v4.4.0)
         run: |
@@ -73,3 +79,39 @@ jobs:
           source "${ZEPHYR_BASE}/zephyr-env.sh"
           west build -b nucleo_l4r5zi -d build . -p always
           test -f build/zephyr/zephyr.bin
+
+      # 虚拟板 qemu_riscv32。gateway_prj_qemu.conf 关掉以太网/CAN/Flash/NVS，
+      # 不能代替 nucleo 实板，也不覆盖 PHY 与时序。
+      - name: Build qemu_riscv32
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          west build -b qemu_riscv32 -d build_qemu . -p always -- \
+            '-DCONF_FILE=framework/prj.conf;gateway_prj.conf;gateway_prj_qemu.conf;framework/conf/targets/qemu.conf'
+          test -f build_qemu/zephyr/zephyr.elf
+
+      - name: Run qemu_riscv32 business checks
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source "${ZEPHYR_BASE}/zephyr-env.sh"
+          mkdir -p ci-artifacts
+          python3 scripts/qemu_serial_check.py \
+            --timeout 90 \
+            --log ci-artifacts/qemu-riscv32-serial.txt \
+            --ready 'uart:~$' \
+            --send 'anomaly config 1 2.5 3.5 5.0' \
+            --send 'gateway status' \
+            --require '传感器 1 阈值已更新: W=2.5 C=3.5 E=5.0' \
+            --require-regex 'Anomaly:\s+(INITIALIZED|RUNNING)' \
+            -- west build -t run --build-dir build_qemu
+
+      - name: Upload QEMU serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-riscv32-serial
+          path: ci-artifacts/qemu-riscv32-serial.txt
+          if-no-files-found: warn
+          retention-days: 7
