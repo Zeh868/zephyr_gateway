@@ -27,6 +27,10 @@ jobs:
     name: nucleo_l4r5zi
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    defaults:
+      run:
+        # 容器作业默认 shell 是 dash，不支持 pipefail / source。
+        shell: bash
     container:
       image: ghcr.io/zephyrproject-rtos/zephyr-build:v0.29.4
       options: --user root
